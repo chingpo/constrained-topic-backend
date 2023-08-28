@@ -1,0 +1,145 @@
+/rate?{"likert":7,"type":"end"}
+{
+  "code": 0,
+  "msg": "task finished."
+}
+
+/register?{"age":18,"gender":0}
+{
+  "code": 2001,
+  "msg": "Age and gender cannot be empty."
+}
+
+{
+  "code": 4001,
+  "msg": "(1054, \"Unknown column 'create_time' in 'field list'\")"
+}
+
+{
+  "code": 2003,
+  "msg": "gender only in (0,1,2)"
+}
+
+
+{
+  "code": 0,
+  "data": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJuYW1lIjoiZGF3c29uZW5qb3kiLCJleHAiOjE2ODk4MTgxOTN9.lLao1g-veym9k1ubh7L_sSS7lbZPjk919sNwdCcR4xI",
+  "msg": "success, user created!"
+}
+
+/logout
+{
+  "code": 0,
+  "msg": "task finished."
+}
+{
+  "code": 4001,
+  "msg": "warning, check data"
+}
+
+
+/users
+{
+  "code": 3001,
+  "msg": "access token empty"
+}
+{
+  "code": "500",
+  "msg": "token illegal"
+}
+{
+  "code": "500",
+  "msg": "token expired"
+}
+
+{
+  "code": 0,
+  "data": [
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 01:00:52 GMT",
+      "gender": 2,
+      "use_id": 1
+    },
+    {
+      "age": 19,
+      "create_time": "Thu, 20 Jul 2023 01:00:52 GMT",
+      "gender": 1,
+      "use_id": 2
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 10:01:08 GMT",
+      "gender": 0,
+      "use_id": 3
+    },
+    {
+      "age": 22,
+      "create_time": "Thu, 20 Jul 2023 01:01:59 GMT",
+      "gender": 1,
+      "use_id": 4
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 10:53:31 GMT",
+      "gender": 0,
+      "use_id": 5
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 10:54:56 GMT",
+      "gender": 0,
+      "use_id": 6
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 10:55:02 GMT",
+      "gender": 0,
+      "use_id": 7
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 10:55:24 GMT",
+      "gender": 0,
+      "use_id": 8
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 10:56:33 GMT",
+      "gender": 0,
+      "use_id": 9
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 11:14:39 GMT",
+      "gender": 0,
+      "use_id": 10
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 11:15:00 GMT",
+      "gender": 0,
+      "use_id": 11
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 11:16:15 GMT",
+      "gender": 0,
+      "use_id": 12
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 16:19:32 GMT",
+      "gender": 0,
+      "use_id": 13
+    },
+    {
+      "age": 18,
+      "create_time": "Thu, 20 Jul 2023 16:26:17 GMT",
+      "gender": 0,
+      "use_id": 14
+    }
+  ],
+  "msg": "success"
+}
+
