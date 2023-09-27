@@ -1,30 +1,50 @@
 from flask import Flask, jsonify, request
+import json
 from common.mysql_operate import db
 import datetime
 import sys
 from api.helper import create_token, validate_token
 from flask_cors import CORS
-from config.setting import SECRET_KEY,IMG_HOME_URL,CL_FLAG
-from api.helper import constraints_generate,dimension_reduction,select_image_ids
-from flask_jwt_extended import create_access_token, jwt_required, set_access_cookies, get_jwt_identity,unset_jwt_cookies, verify_jwt_in_request,JWTManager
+from config.setting import SECRET_KEY,IMG_HOME_URL,CL_FLAG,TOPIC_NUM
+from api.helper import constraints_generate,update_nn,select_image_ids
+from flask_jwt_extended import create_access_token, jwt_required, set_access_cookies, get_jwt_identity,JWTManager
 from copkmeans.cop_kmeans import cop_kmeans
+import logging
+logger = logging.getLogger('my_logger')
+import os
+import shutil
+from joblib import load
 
 app = Flask(__name__)
 CORS(app,supports_credentials=True)
 app.config["JWT_SECRET_KEY"] = SECRET_KEY
-app.config['JWT_EXPIRATION_DELTA'] = datetime.timedelta(seconds=7200)
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = datetime.timedelta(seconds=3600)  # 3600 seconds 1 hour
 jwt = JWTManager(app)
 import numpy as np
-vectors=np.load('api/img_vectors.npy')
-with open('api/id_to_label.txt', 'r') as f:
-    ids_in_txt = [line.strip().split('\t')[0] for line in f]
-
+# all vectors stacked
+# vectors=np.load('copkmeans/patch_features_init.npy',allow_pickle=True) #rgb
+vectors=np.load('copkmeans/patch_features_init_L.npy',allow_pickle=True)
+vectors_2d=np.load('copkmeans/features_pca.npy',allow_pickle=True)
+ids_in_txt = np.load('textfile/id_to_label.npy',allow_pickle=True).tolist()
+# id to label不修改，聚类中心和特征处理已经选了最适合的了
+# 前端要读的json文件，每次最近邻根据修改的center更新，不更新效果太差
+# nn_id_to_label = np.load('copkmeans/patch_kmeans_init_nn.npy',allow_pickle=True)
+nn_id_to_label=np.load('textfile/nn_label_0.npy',allow_pickle=True) # nearest neighbor json
 #db connect test
 @app.route("/users", methods=["GET"])
 def get_users():
-    sql = "SELECT * FROM user order by create_time desc limit 10"
+    # logger.debug("log level: DEBUG")
+    # logger.info("log level:INFO")
+    # logger.warning("log level:WARNING")
+    # logger.error("log level:ERROR")
+    # logger.critical("log level:CRITICAL")
+    # sql = "SELECT * FROM user where finish_time is not null"
+    sql = "SELECT user_id,comment,start_rate,end_rate,compare_rate FROM user where user_id >=55 and user_id<=60"
     data = db.select_db(sql)
-    # data=0
+    # comment = data[0]['comment']
+    # print(f"Comment: {comment}")
+    # comment_json = json.loads(comment)
+    # print(f"Comment: {comment_json}")
     print("get all user info == >> {}".format(data))
     return jsonify({"code": 0, "data": data, "msg": "success"})
 
@@ -32,94 +52,158 @@ def get_users():
 
 
 # user_id,round 放到前端
-# cluster 2d compute
-# tsne,umap
-# 前端处理逻辑，不需要api？
+# read ids to label from np and return 
 @app.route("/cluster", methods=["POST"])
-# @jwt_required()  
-def get_clusters_json_url():    
-    round =request.get_json("round")
-    user_id = get_jwt_identity().split("_")[1]
-    if(round==0):
-         file_name="nn_image_tsne.json"
-    else:
-         file_name=user_id+"_"+round+"nn_image_tsne.json"
-    return jsonify({"code": 0, "data": file_name, "msg": "success"})
+@jwt_required()  
+def get_clusters(): 
+    user_id = get_jwt_identity().split("_")[1] 
+    json_data = request.get_json()  
+    round =json_data.get("round")
+    if round<1:
+        return jsonify({"code": 30007,  "msg": "round cannot be less than 1."})  
+    file_name=os.path.join('textfile',f'nn_label_{user_id}_{round}.npy')
+    info = np.load(file_name,allow_pickle=True).tolist()
+    # 将结果转换为JSON
+    return jsonify({"code": 0, "data": info, "msg": "success"})
 
 # header：user_id, cluster_ids, limit, round
 # random select num of limit patches 
+# read ids to label from np and return 
 @app.route("/patches", methods=["POST"])
-# @jwt_required()  
+@jwt_required()  
 def get_patches():
     """ random get number of limit patches of each cluster """ 
-    # user_id = get_jwt_identity().split("_")[1]
+    user_id = get_jwt_identity().split("_")[1]
     json_data = request.get_json()
-    # round =json_data.get_json("round")
+    round =json_data.get("round")
     cluster_ids = json_data.get("cluster_ids")
-    print(cluster_ids)
     limit = json_data.get("limit")
-    file_name='/Users/seihaen/Desktop/code/backend/api/id_to_label.txt'
-    # dnd读txt label to id file？还是读数据库，哪个块
+    if(round>0):
+        file_name = f'textfile/id_to_label_{user_id}.npy'
+    else:
+        file_name = f'textfile/id_to_label.npy'
     patches=select_image_ids(file_name,cluster_ids,limit,IMG_HOME_URL)
     return jsonify({"code": 0, "data": {'items':patches}, "msg": "success"})
 
 # get user feedback to compute constraints and copkmeans
 @app.route("/cluster-update", methods=["POST"])
-# @jwt_required()  
+@jwt_required()  
 def cluster_update():
     """copkmeans""" 
-    # return json file name
-    # display里tsne降维centers，
-    # 每个user和每次round都会修改读取
-    # json_data = request.get_json()
-    # old_items=json_data.get("old_items") 
-    # new_items=json_data.get("new_items") 
-    old_items=[{'cluster_id': '1', 'id': '222_1_1', 'patches': [{'img_id': '1', 'url': 'http://136.187.116.134:18080/web/images/1_1.jpg'}, {'img_id': '2', 'url': 'http://136.187.116.134:18080/web/images/1_2.jpg'}, {'img_id': '11', 'url': 'http://136.187.116.134:18080/web/images/3_1.jpg'}, {'img_id': '12', 'url': 'http://136.187.116.134:18080/web/images/3_2.jpg'}]}, {'cluster_id': '5', 'id': '222_1_2', 'patches': [{'img_id': '3', 'url': 'http://136.187.116.134:18080/web/images/1_3.jpg'}, {'img_id': '4', 'url': 'http://136.187.116.134:18080/web/images/1_4.jpg'}]}, {'cluster_id': '6', 'id': '222_1_3', 'patches': [{'img_id': '5', 'url': 'http://136.187.116.134:18080/web/images/1_5.jpg'}, {'img_id': '6', 'url': 'http://136.187.116.134:18080/web/images/1_6.jpg'}]}, {'cluster_id': '43', 'id': '222_1_4', 'patches': [{'img_id': '7', 'url': 'http://136.187.116.134:18080/web/images/2_1.jpg'}, {'img_id': '8', 'url': 'http://136.187.116.134:18080/web/images/2_2.jpg'}]}, {'cluster_id': '3', 'id': '222_1_5', 'patches': [{'img_id': '9', 'url': 'http://136.187.116.134:18080/web/images/2_3.jpg'}, {'img_id': '10', 'url': 'http://136.187.116.134:18080/web/images/2_4.jpg'}]}]
-    new_items= [{'cluster_id': '1', 'id': '222_1_1', 'patches': [{'img_id': '2', 'url': 'http://136.187.116.134:18080/web/images/1_2.jpg'}, {'img_id': '11', 'url': 'http://136.187.116.134:18080/web/images/3_1.jpg'}, {'img_id': '12', 'url': 'http://136.187.116.134:18080/web/images/3_2.jpg'}]}, {'cluster_id': '5', 'id': '222_1_2', 'patches': [{'img_id': '1', 'url': 'http://136.187.116.134:18080/web/images/1_1.jpg'}, {'img_id': '5', 'url': 'http://136.187.116.134:18080/web/images/1_5.jpg'}, {'img_id': '3', 'url': 'http://136.187.116.134:18080/web/images/1_3.jpg'}, {'img_id': '4', 'url': 'http://136.187.116.134:18080/web/images/1_4.jpg'}]}, {'cluster_id': '6', 'id': '222_1_3', 'patches': [{'img_id': '6', 'url': 'http://136.187.116.134:18080/web/images/1_6.jpg'}, {'img_id': '9', 'url': 'http://136.187.116.134:18080/web/images/2_3.jpg'}]}, {'cluster_id': '43', 'id': '222_1_4', 'patches': [{'img_id': '7', 'url': 'http://136.187.116.134:18080/web/images/2_1.jpg'}, {'img_id': '8', 'url': 'http://136.187.116.134:18080/web/images/2_2.jpg'}]}, {'cluster_id': '3', 'id': '222_1_5', 'patches': [{'img_id': '10', 'url': 'http://136.187.116.134:18080/web/images/2_4.jpg'}]}]
-    old_clusters = {item['cluster_id']: [int(patch['img_id']) for patch in item['patches']] for item in old_items}
-    new_clusters = {item['cluster_id']: [int(patch['img_id']) for patch in item['patches']] for item in new_items}
-    ml,cl=constraints_generate(old_clusters,new_clusters,cl=CL_FLAG)
-    # partial_dataset=selected_topic_item(old_clusters.keys(),vectors)
+    # 每个user和每次round都会修改读取txt和json
+    center_k=TOPIC_NUM
+    json_data = request.get_json()
+    user_id = get_jwt_identity().split("_")[1]
+    old_items=json_data.get("old_items") 
+    new_items=json_data.get("new_items") 
+    round=json_data.get("round")
+    # update后更新nn和old items里的图片的label/cluster id
+    if round>1:
+        nn_id_to_label=np.load(f'textfile/nn_label_{user_id}_{round-1}.npy',allow_pickle=True)
+        user_label_file_path = os.path.join('textfile', f'id_to_label_{user_id}.npy')
+        with open(user_label_file_path, 'rb') as f:
+            ids_in_txt = np.load(f, allow_pickle=True).tolist()
+
+    indices = [img['index'] for cluster in nn_id_to_label for img in cluster['cluster_img']]
+    nn_selected_features = [vectors[index] for index in indices]
+    # dnd
+    dnd_names=sum(old_items.values(),[])
+    dnd_indices = [index for name in dnd_names for index, id in enumerate(ids_in_txt) if id[0] == name]
+    dnd_indices = [id for id in dnd_indices if id not in indices]
+    dnd_selected_vectors = [vectors[index] for index in dnd_indices]
+    data_source=np.array(nn_selected_features+dnd_selected_vectors)
+    cop_index=indices+dnd_indices
+    ml,cl=constraints_generate(old_items,new_items,ids_in_txt,cop_index,cl=CL_FLAG)
     print("before copkmeans ",datetime.datetime.now())
-    clusters, centers = cop_kmeans(dataset=vectors, k=30, ml=ml,cl=cl)
+    clusters,centers = cop_kmeans(dataset=data_source, k=center_k, ml=ml,cl=cl)
     print("after copkmeans",datetime.datetime.now())
-    with open('id_to_label_new.txt', 'w') as f:
-        for id, center in zip(ids_in_txt, clusters):
-            f.write(f'{id}\t{center}\n')
-    # method 改成run时得到的参数
-    chart_data=dimension_reduction(vectors,centers,20,'tsne')
-    print(datetime.datetime.now())
-    # 第二次round不会把上一次round的constraints效果失效么
-    print(clusters)
-    return jsonify({"code": 0, "data": {"clusters":0,"centers":0,"chart_data":chart_data}, "msg": "success"})
+    # 保存ids_in_txt到文件
+    for index, cluster in zip(indices, clusters[:len(indices)]):
+        ids_in_txt[index][1] = str(cluster)
+    for index, cluster in zip(dnd_indices, clusters[len(indices):]):
+        ids_in_txt[index][1] = str(cluster)
+    np.save(user_label_file_path, np.array(ids_in_txt, dtype=object))
+    names= [row[0] for row in ids_in_txt]
+    nn_data=update_nn(nn_model,names,centers,vectors_2d)
+    np.save(f'textfile/nn_label_{user_id}_{round}.npy', nn_data)
+    return jsonify({"code": 0, "data": [], "msg": "success"})
+
+# # get user feedback to compute constraints and copkmeans
+# @app.route("/cluster-update", methods=["POST"])
+# @jwt_required()  
+# def cluster_update():
+#     """copkmeans""" 
+#     # 每个user和每次round都会修改读取txt和json
+#     center_k=TOPIC_NUM
+#     json_data = request.get_json()
+#     user_id = get_jwt_identity().split("_")[1]
+#     old_items=json_data.get("old_items") 
+#     new_items=json_data.get("new_items") 
+#     round=json_data.get("round")
+#     user_label_file_path = os.path.join('textfile', f'id_to_label_{user_id}.npy')
+#     if os.path.exists(user_label_file_path):
+#         with open(user_label_file_path, 'rb') as f:
+#             ids_in_txt = np.load(f, allow_pickle=True).tolist()
+#     else:
+#         ids_in_txt = np.load('textfile/id_to_label.npy',allow_pickle=True).tolist()
+#     # 近邻 20*20
+#     indices = [img['index'] for cluster in nn_id_to_label for img in cluster['cluster_img']]
+#     nn_selected_features = [vectors[index] for index in indices]
+#     # dnd
+#     dnd_names=sum(old_items.values(),[])
+#     dnd_indices = [index for name in dnd_names for index, id in enumerate(ids_in_txt) if id[0] == name]
+#     dnd_indices = [id for id in dnd_indices if id not in indices]
+#     dnd_selected_vectors = [vectors[index] for index in dnd_indices]
+#     data_source=np.array(nn_selected_features+dnd_selected_vectors)
+#     cop_index=indices+dnd_indices
+#     ml,cl=constraints_generate(old_items,new_items,ids_in_txt,cop_index,cl=CL_FLAG)
+#     print("before copkmeans ",datetime.datetime.now())
+#     clusters,centers = cop_kmeans(dataset=data_source, k=center_k, ml=ml,cl=cl)
+#     print("after copkmeans",datetime.datetime.now())
+#     # 保存ids_in_txt到文件
+#     for index, cluster in zip(indices, clusters[:len(indices)]):
+#         ids_in_txt[index][1] = str(cluster)
+#     for index, cluster in zip(dnd_indices, clusters[len(indices):]):
+#         ids_in_txt[index][1] = str(cluster)
+#     np.save(user_label_file_path, np.array(ids_in_txt, dtype=object))
+#     names= [row[0] for row in ids_in_txt]
+#     nn_data=update_nn(nn_model,names,centers,vectors_2d)
+#     np.save(f'textfile/nn_label_{user_id}_{round}.npy', nn_data)
+#     return jsonify({"code": 0, "data": [], "msg": "success"})
 
 
 @app.route("/rate", methods=["POST"])
-# @jwt_required()  
+@jwt_required()  
 def rate():
-    # user_id = get_jwt_identity().split("_")[1]
-    user_id = 39
+    user_id = get_jwt_identity().split("_")[1]
     json_data = request.get_json()
     rate_type = json_data.get("type")  
     likert = json_data.get("likert") 
     finish_time = datetime.datetime.now()
-    print(finish_time)
     if rate_type is None or likert is  None:
         return jsonify({"code": 70004, "data":0, "msg": "error,type or likert cannot be none!"})
     if rate_type == "start":
         sql = "Update user set start_rate='{}' where (user_id='{}' and finish_time is null)".format(likert, user_id)
-    elif rate_type== "end":    
-        sql = "Update user set end_rate='{}' , finish_time='{}' where (user_id='{}' and finish_time is null)".format(likert,finish_time, user_id)
+    elif rate_type== "end":  
+        print(json_data.get("comment"))
+        comment = json.dumps(json_data.get("comment"))
+        # comment=None
+        sql = "Update user set end_rate='{}' , finish_time='{}',comment='{}' where (user_id='{}' and finish_time is null)".format(likert,finish_time,comment, user_id)
+    elif rate_type== "compare":
+        sql = "Update user set compare_rate='{}' where (user_id='{}' and finish_time is null)".format(likert, user_id)
     data = db.execute_db(sql,"UPDATE")
     print("db return == >> {}".format(data))
     if data['status']==-1:
         return jsonify({"code": 7001,  "msg": format(data['err'])})
     elif data['status']==0: 
         if rate_type=="start":
-            return jsonify({ 'code': 0, 'msg': "kmeans rated."})
+            return jsonify({ 'code': 0, 'msg': "init rated."})
         elif rate_type=="end":
             # unset_jwt_cookies()
             return jsonify({ 'code': 0, 'msg': "task finished."})
+        elif rate_type=="compare":
+            return jsonify({ 'code': 0, 'msg': "copkmeans rated."})
+
 
 
 @app.route("/register", methods=['POST'])
@@ -142,6 +226,7 @@ def user_register():
         elif data['status']==0:  
             access_token = create_access_token(identity='DnD_'+str(data['lastrowid']))
             response=jsonify({"code": 0, "data":{"user_id":data['lastrowid'],"access_token":access_token},"msg": "success, user created!"})
+            # unsafe
             set_access_cookies(response, access_token)
             return response
     else:
