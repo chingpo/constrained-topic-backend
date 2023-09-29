@@ -18,18 +18,14 @@ from joblib import load
 app = Flask(__name__)
 CORS(app,supports_credentials=True)
 app.config["JWT_SECRET_KEY"] = SECRET_KEY
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = datetime.timedelta(seconds=3600)  # 3600 seconds 1 hour
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = datetime.timedelta(seconds=3600*2)  # 3600 seconds 1 hour
 jwt = JWTManager(app)
 import numpy as np
 # all vectors stacked
 # vectors=np.load('copkmeans/patch_features_init.npy',allow_pickle=True) #rgb
-vectors=np.load('copkmeans/patch_features_init_L.npy',allow_pickle=True)
-vectors_2d=np.load('copkmeans/features_pca.npy',allow_pickle=True)
-ids_in_txt = np.load('textfile/id_to_label.npy',allow_pickle=True).tolist()
-# id to label不修改，聚类中心和特征处理已经选了最适合的了
-# 前端要读的json文件，每次最近邻根据修改的center更新，不更新效果太差
-# nn_id_to_label = np.load('copkmeans/patch_kmeans_init_nn.npy',allow_pickle=True)
-nn_id_to_label=np.load('textfile/nn_label_0.npy',allow_pickle=True) # nearest neighbor json
+vectors=np.load('copkmeans/patch_features_init_L.npy',allow_pickle=True) #gray 64d
+vectors_2d=np.load('copkmeans/features_tsne.npy',allow_pickle=True)
+# vectors_2d=np.load('copkmeans/features_pca.npy',allow_pickle=True)
 #db connect test
 @app.route("/users", methods=["GET"])
 def get_users():
@@ -97,79 +93,42 @@ def cluster_update():
     old_items=json_data.get("old_items") 
     new_items=json_data.get("new_items") 
     round=json_data.get("round")
+    logger.info("This round %s user %s update cluster list %s", round, user_id, list(old_items.keys()))
     # update后更新nn和old items里的图片的label/cluster id
+    user_label_file_path = os.path.join('textfile', f'id_to_label_{user_id}.npy')
     if round>1:
         nn_id_to_label=np.load(f'textfile/nn_label_{user_id}_{round-1}.npy',allow_pickle=True)
-        user_label_file_path = os.path.join('textfile', f'id_to_label_{user_id}.npy')
         with open(user_label_file_path, 'rb') as f:
-            ids_in_txt = np.load(f, allow_pickle=True).tolist()
-
-    indices = [img['index'] for cluster in nn_id_to_label for img in cluster['cluster_img']]
-    nn_selected_features = [vectors[index] for index in indices]
+            ids_in_txt = np.load(f, allow_pickle=True)
+    elif round<=1:
+        nn_id_to_label=np.load('textfile/nn_label_0_tsne.npy',allow_pickle=True) # nearest neighbor json
+        ids_in_txt = np.load('textfile/id_to_label.npy',allow_pickle=True)
+    # 获取要处理的图片的feature stack起来 
+    # display
+    indices = [np.where(ids_in_txt[:, 0] == item['img_name'].replace('.jpg', ''))[0][0] for item in nn_id_to_label]
+    nn_selected_vectors = vectors[indices]
     # dnd
     dnd_names=sum(old_items.values(),[])
     dnd_indices = [index for name in dnd_names for index, id in enumerate(ids_in_txt) if id[0] == name]
     dnd_indices = [id for id in dnd_indices if id not in indices]
     dnd_selected_vectors = [vectors[index] for index in dnd_indices]
-    data_source=np.array(nn_selected_features+dnd_selected_vectors)
+    data_source = np.vstack((nn_selected_vectors, dnd_selected_vectors))
     cop_index=indices+dnd_indices
-    ml,cl=constraints_generate(old_items,new_items,ids_in_txt,cop_index,cl=CL_FLAG)
+    ml,cl=constraints_generate(user_id,round,old_items,new_items,ids_in_txt,cop_index,cl_flag=CL_FLAG)
     print("before copkmeans ",datetime.datetime.now())
-    clusters,centers = cop_kmeans(dataset=data_source, k=center_k, ml=ml,cl=cl)
+    clusters,_ = cop_kmeans(dataset=data_source, k=center_k, ml=ml,cl=cl)
     print("after copkmeans",datetime.datetime.now())
     # 保存ids_in_txt到文件
     for index, cluster in zip(indices, clusters[:len(indices)]):
-        ids_in_txt[index][1] = str(cluster)
+        ids_in_txt[index, 1] = str(cluster) 
     for index, cluster in zip(dnd_indices, clusters[len(indices):]):
-        ids_in_txt[index][1] = str(cluster)
+        ids_in_txt[index, 1] = str(cluster) 
     np.save(user_label_file_path, np.array(ids_in_txt, dtype=object))
     names= [row[0] for row in ids_in_txt]
-    nn_data=update_nn(nn_model,names,centers,vectors_2d)
+    nn_data=update_nn(names,vectors_2d,center_k,ids_in_txt)
     np.save(f'textfile/nn_label_{user_id}_{round}.npy', nn_data)
     return jsonify({"code": 0, "data": [], "msg": "success"})
 
-# # get user feedback to compute constraints and copkmeans
-# @app.route("/cluster-update", methods=["POST"])
-# @jwt_required()  
-# def cluster_update():
-#     """copkmeans""" 
-#     # 每个user和每次round都会修改读取txt和json
-#     center_k=TOPIC_NUM
-#     json_data = request.get_json()
-#     user_id = get_jwt_identity().split("_")[1]
-#     old_items=json_data.get("old_items") 
-#     new_items=json_data.get("new_items") 
-#     round=json_data.get("round")
-#     user_label_file_path = os.path.join('textfile', f'id_to_label_{user_id}.npy')
-#     if os.path.exists(user_label_file_path):
-#         with open(user_label_file_path, 'rb') as f:
-#             ids_in_txt = np.load(f, allow_pickle=True).tolist()
-#     else:
-#         ids_in_txt = np.load('textfile/id_to_label.npy',allow_pickle=True).tolist()
-#     # 近邻 20*20
-#     indices = [img['index'] for cluster in nn_id_to_label for img in cluster['cluster_img']]
-#     nn_selected_features = [vectors[index] for index in indices]
-#     # dnd
-#     dnd_names=sum(old_items.values(),[])
-#     dnd_indices = [index for name in dnd_names for index, id in enumerate(ids_in_txt) if id[0] == name]
-#     dnd_indices = [id for id in dnd_indices if id not in indices]
-#     dnd_selected_vectors = [vectors[index] for index in dnd_indices]
-#     data_source=np.array(nn_selected_features+dnd_selected_vectors)
-#     cop_index=indices+dnd_indices
-#     ml,cl=constraints_generate(old_items,new_items,ids_in_txt,cop_index,cl=CL_FLAG)
-#     print("before copkmeans ",datetime.datetime.now())
-#     clusters,centers = cop_kmeans(dataset=data_source, k=center_k, ml=ml,cl=cl)
-#     print("after copkmeans",datetime.datetime.now())
-#     # 保存ids_in_txt到文件
-#     for index, cluster in zip(indices, clusters[:len(indices)]):
-#         ids_in_txt[index][1] = str(cluster)
-#     for index, cluster in zip(dnd_indices, clusters[len(indices):]):
-#         ids_in_txt[index][1] = str(cluster)
-#     np.save(user_label_file_path, np.array(ids_in_txt, dtype=object))
-#     names= [row[0] for row in ids_in_txt]
-#     nn_data=update_nn(nn_model,names,centers,vectors_2d)
-#     np.save(f'textfile/nn_label_{user_id}_{round}.npy', nn_data)
-#     return jsonify({"code": 0, "data": [], "msg": "success"})
 
 
 @app.route("/rate", methods=["POST"])

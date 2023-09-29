@@ -1,5 +1,8 @@
 import pymysql
 from config.setting import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_DB
+import logging
+
+logger = logging.getLogger('my_logger')
 
 class MysqlDb():
 
@@ -23,6 +26,7 @@ class MysqlDb():
         self.cur.execute(sql)
         data = self.cur.fetchall()
         print("SQL SELECT ====>> ",sql)
+        logger.info("SQL SELECT ====>> %s", sql)
         return data
 
     def execute_db(self, sql,type):
@@ -31,6 +35,7 @@ class MysqlDb():
             self.cur.execute(sql)
             self.conn.commit()
             print("SQL execute ====>> ",sql)
+            logger.info("SQL SELECT ====>> %s", sql)
             if type=='INSERT':   
                 return {"status":0,"lastrowid":self.cur.lastrowid}
             elif type=='UPDATE':
@@ -42,6 +47,7 @@ class MysqlDb():
                 return {"status":0}
         except Exception as e:
             print("error:{}".format(e))
+            logger.error("SQL SELECT ====>> %s", sql)
             self.conn.rollback()
             return {"status":-1,"err":e}
         

@@ -10,7 +10,6 @@ def cop_kmeans(dataset, k, ml=[], cl=[],
     ml, cl = transitive_closure(ml, cl, len(dataset))
     ml_info = get_ml_info(ml, dataset)
     tol = tolerance(tol, dataset)
-    print("1111    ",datetime.datetime.now())
     centers = initialize_centers(dataset, k, initialization)
     for _ in range(max_iter):
         clusters_ = [-1] * len(dataset)
@@ -30,7 +29,6 @@ def cop_kmeans(dataset, k, ml=[], cl=[],
                 if not found_cluster:
                     return None, None
         clusters_, centers_ = compute_centers(clusters_, dataset, k, ml_info)
-        print("2222    ",clusters_)
         shift = sum(l2_distance(centers[i], centers_[i]) for i in range(k))
         if shift <= tol:
             break

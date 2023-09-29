@@ -9,6 +9,9 @@ from sklearn.neighbors import NearestNeighbors
 import json
 import os
 import uuid
+from scipy.spatial.distance import cdist
+import logging
+logger = logging.getLogger('my_logger')
 
 
 
@@ -16,12 +19,12 @@ import uuid
 def select_image_ids(file_name,cluster_ids,limit,url):
     # 读取label_to_id.txt文件
     cluster_dict = {cluster_id: [] for cluster_id in cluster_ids}
-    with open(file_name, 'r') as f:
-        for line in f:
-            img_id, cluster_id = line.strip().split('\t')
-            cluster_id = int(cluster_id)  # convert cluster_id to int
-            if cluster_id in cluster_dict:
-                cluster_dict[cluster_id].append(img_id)
+    ids_in_txt = np.load(file_name, allow_pickle=True).tolist()
+    for line in ids_in_txt:
+        img_id, cluster_id = line
+        cluster_id = int(cluster_id)  # convert cluster_id to int
+        if cluster_id in cluster_dict:
+            cluster_dict[cluster_id].append(img_id)
     # 从每个聚类中随机选择图像
     selected_imgs = {}
     selected_items = []
@@ -38,36 +41,70 @@ def select_image_ids(file_name,cluster_ids,limit,url):
     return selected_items
 
 
-# identify add/delete of each topic
+# identify add/delete of each cluster
 # add pair to must_link array
 # delete pair to cannot_link array
-# copkmeans, pairwise constraints on inited cluster
-def constraints_generate(old_clusters, new_clusters,cl=False):
+# index in dnd_indices
+def constraints_generate(user_id,round,old_clusters, new_clusters,ids_in_txt,dnd_indices,cl_flag):
     ml = []
     cl = []
-    for cluster_id in set(old_clusters.keys()).union(new_clusters.keys()):
+    id_to_index = {id[0]: index for index, id in enumerate(ids_in_txt)}
+    for cluster_id in set(old_clusters.keys()):
         old_patches = old_clusters.get(cluster_id, [])
         new_patches = new_clusters.get(cluster_id, [])
-        half_old_patches = random.sample(old_patches, len(old_patches)//2)
+        half_remain_patches = [patch for patch in new_patches if patch in old_patches]  # after dnd still in the same cluster
+        half_remain_patches = random.sample(half_remain_patches, len(half_remain_patches)//8) # 0.5 0.25
 
         added_patches = [patch for patch in new_patches if patch not in old_patches]
-        for new_patch in added_patches:
-            for old_patch in half_old_patches:
-                ml.append((new_patch, old_patch))
-        if cl:
+        for added_patch in added_patches:
+            add_patch_index = id_to_index[added_patch]
+            for flag_patch in half_remain_patches:
+                flag_patch_index = id_to_index[flag_patch]
+                ml.append((add_patch_index, flag_patch_index))
+        if cl_flag:
             removed_patches = [patch for patch in old_patches if patch not in new_patches]
             for removed_patch in removed_patches:
-                half_old_patches = random.sample([patch for patch in old_patches if patch != removed_patch], len(old_patches)//2)
-                for old_patch in half_old_patches:
-                    cl.append((removed_patch, old_patch))
-
-    print("old   ",old_clusters)
-    print("new    ",new_clusters)
-    print("must link   ",ml)
-    print("cannot link ",cl)
-    
+                removed_patch_index = id_to_index[removed_patch]
+                for flag_patch in half_remain_patches:
+                    flag_patch_index = id_to_index[flag_patch]
+                    cl.append((removed_patch_index, flag_patch_index))
+    logger.info("This round %s user %s give must link %s", round, user_id, ml)
+    logger.info("This round %s user %s give cannot link %s", round, user_id, cl)
+    # Convert indices in ml and cl to indices in dnd_indices
+    ml = [(dnd_indices.index(i), dnd_indices.index(j)) for i, j in ml]
+    cl = [(dnd_indices.index(i), dnd_indices.index(j)) for i, j in cl]
     return ml, cl
 
+
+def update_nn(names,vectors_2d,center_k,ids_in_txt,nn_num=20):
+    # display计算近邻，求json，json写到文件里
+    # nearest_neighbors = model.kneighbors(centers, return_distance=False)
+    chart_data = []
+    result = []
+    for i in range(center_k):
+        # 获取当前聚类的所有点
+        cluster_points = vectors_2d[ids_in_txt[:, 1] == str(i)]     
+        # 计算聚类中心
+        center = cluster_points.mean(axis=0)       
+        # 计算所有点到聚类中心的距离
+        distances = cdist(cluster_points, center.reshape(1, -1))       
+        # 获取距离最近的20个点的索引
+        nearest_indices = distances.argsort(axis=0)[:nn_num].flatten()        
+        # 获取这些点的图片名字
+        nearest_images = ids_in_txt[ids_in_txt[:, 1] == str(i)][nearest_indices, 0]      
+        # 将结果添加到列表中
+        result.append(nearest_images)
+
+    for cluster_id, neighbors in enumerate(result):
+        for neighbor in neighbors:
+            index = names.index(neighbor)
+            chart_data.append({
+                'cluster_id': cluster_id,
+                'img_name': neighbor + ".jpg",
+                'x': float(vectors_2d[index][0]),
+                'y': float(vectors_2d[index][1])
+            }) 
+    return chart_data
 
 #  vectors=np.load('./img_vectors.npy')
 def dimension_reduction(vectors,centers,n_neighbors,method='tsne'):
