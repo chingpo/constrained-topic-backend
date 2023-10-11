@@ -9,30 +9,49 @@ from sklearn.neighbors import NearestNeighbors
 import json
 import os
 import uuid
-from scipy.spatial.distance import cdist
+from scipy.spatial.distance import cdist,canberra
 import logging
 logger = logging.getLogger('my_logger')
 
 
+def distance_cal(vectors_2d,cluster_ids,ids_in_txt,nn_num):
+    result = []
+    for i in cluster_ids:
+        # 获取当前聚类的所有点
+        cluster_points = vectors_2d[ids_in_txt[:, 1] == str(i)]    
+        # 计算聚类中心
+        center = cluster_points.mean(axis=0)      
+        # 计算所有点到聚类中心的距离
+        distances = cdist(cluster_points, center.reshape(1, -1),metric='canberra')       
+        # 获取距离最近的nn_num个点的索引
+        if len(cluster_points) > nn_num:
+            nearest_indices = distances.argsort(axis=0)[:nn_num].flatten()    
+        else:
+            nearest_indices = distances.argsort(axis=0)[:].flatten()
+            logger.warning("limit large than cluster length")         
+        # 获取这些点的图片名字
+        nearest_images = ids_in_txt[ids_in_txt[:, 1] == str(i)][nearest_indices, 0]      
+        # 将结果添加到列表中
+        result.append(nearest_images)
+    return result
+
+def sort_by_distance(pairs, vectors_2d, num=10):
+    distances = [(pair, canberra(vectors_2d[pair[0]], vectors_2d[pair[1]])) for pair in pairs]
+    sorted_distances = sorted(distances, key=lambda x: x[1])
+    if num < 0:
+        return [pair for pair, distance in sorted_distances[num:]]
+    elif len(sorted_distances) > num:
+        return [pair for pair, distance in sorted_distances[:num]]
+    else:
+        return [pair for pair, distance in sorted_distances]
 
 # random select img_ids from cluster_ids group by cluster_id limit by limit
-def select_image_ids(file_name,cluster_ids,limit,url):
-    # 读取label_to_id.txt文件
-    cluster_dict = {cluster_id: [] for cluster_id in cluster_ids}
-    ids_in_txt = np.load(file_name, allow_pickle=True).tolist()
-    for line in ids_in_txt:
-        img_id, cluster_id = line
-        cluster_id = int(cluster_id)  # convert cluster_id to int
-        if cluster_id in cluster_dict:
-            cluster_dict[cluster_id].append(img_id)
+def select_image_ids(vectors_2d,ids_in_txt,cluster_ids,limit,url):
     # 从每个聚类中随机选择图像
-    selected_imgs = {}
+    nearest_images_list = distance_cal(vectors_2d, cluster_ids, ids_in_txt, limit) 
     selected_items = []
-    for cluster_id, img_ids in cluster_dict.items():
-        selected_imgs={}
-        selected_imgs[cluster_id] = random.sample(img_ids, limit)
-        cluster_id, img_ids = list(selected_imgs.items())[0]
-        patches = [{"img_id": img_id, "url": url + str(img_id) + ".jpg"} for img_id in img_ids]
+    for cluster_id, nearest_images in zip(cluster_ids, nearest_images_list):
+        patches = [{"img_id": img_id, "url": url + str(img_id) + ".jpg"} for img_id in nearest_images]
         selected_items.append({
             "id": str(uuid.uuid4())[:8],  # generate a unique 8-char string
             "cluster_id": str(cluster_id),
@@ -45,7 +64,7 @@ def select_image_ids(file_name,cluster_ids,limit,url):
 # add pair to must_link array
 # delete pair to cannot_link array
 # index in dnd_indices
-def constraints_generate(user_id,round,old_clusters, new_clusters,ids_in_txt,dnd_indices,cl_flag):
+def constraints_generate(user_id,round,old_clusters, new_clusters,ids_in_txt,dnd_indices,vectors_2d,cl_flag):
     ml = []
     cl = []
     id_to_index = {id[0]: index for index, id in enumerate(ids_in_txt)}
@@ -68,11 +87,15 @@ def constraints_generate(user_id,round,old_clusters, new_clusters,ids_in_txt,dnd
                 for flag_patch in half_remain_patches:
                     flag_patch_index = id_to_index[flag_patch]
                     cl.append((removed_patch_index, flag_patch_index))
-    logger.info("This round %s user %s give must link %s", round, user_id, ml)
-    logger.info("This round %s user %s give cannot link %s", round, user_id, cl)
     # Convert indices in ml and cl to indices in dnd_indices
     ml = [(dnd_indices.index(i), dnd_indices.index(j)) for i, j in ml]
     cl = [(dnd_indices.index(i), dnd_indices.index(j)) for i, j in cl]
+    # 限制ml和cl的数量
+    # 分别获取距离最近和最远的约束对
+    ml = sort_by_distance(ml, vectors_2d)
+    logger.info("This round %s user %s give must link %s", round, user_id, ml)
+    cl = sort_by_distance(cl, vectors_2d, num=-10)
+    logger.info("This round %s user %s give cannot link %s", round, user_id, cl)
     return ml, cl
 
 
@@ -80,22 +103,9 @@ def update_nn(names,vectors_2d,center_k,ids_in_txt,nn_num=20):
     # display计算近邻，求json，json写到文件里
     # nearest_neighbors = model.kneighbors(centers, return_distance=False)
     chart_data = []
-    result = []
-    for i in range(center_k):
-        # 获取当前聚类的所有点
-        cluster_points = vectors_2d[ids_in_txt[:, 1] == str(i)]     
-        # 计算聚类中心
-        center = cluster_points.mean(axis=0)       
-        # 计算所有点到聚类中心的距离
-        distances = cdist(cluster_points, center.reshape(1, -1))       
-        # 获取距离最近的20个点的索引
-        nearest_indices = distances.argsort(axis=0)[:nn_num].flatten()        
-        # 获取这些点的图片名字
-        nearest_images = ids_in_txt[ids_in_txt[:, 1] == str(i)][nearest_indices, 0]      
-        # 将结果添加到列表中
-        result.append(nearest_images)
-
-    for cluster_id, neighbors in enumerate(result):
+    # 使用distance_cal函数计算最近的图像
+    nearest_images_list = distance_cal(vectors_2d, list(range(center_k)), ids_in_txt, nn_num)
+    for cluster_id, neighbors in enumerate(nearest_images_list):
         for neighbor in neighbors:
             index = names.index(neighbor)
             chart_data.append({
